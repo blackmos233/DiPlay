@@ -33,6 +33,7 @@ Wi-Fi Direct 现支持 Android 9 的旧版建组路径，使用系统返回的�
   - 支持在设置页面中自由切换开启（“跳过SDP连接”）。
 
 - **全局外部调用链与车载桌面（Launcher）深度集成**：
+  - 详细开发指南与标准示例请参阅：[外部调用链与第三方车载桌面集成指南](docs/EXTERNAL_CONTROL_API.md)。
   - **广播控制通道（热交互，零抢焦）**：
     - `com.shihab.diplay.action.CONNECT`（支持 `silent=true`、`fast_rfcomm=true`）
     - `com.shihab.diplay.action.DISCONNECT`
