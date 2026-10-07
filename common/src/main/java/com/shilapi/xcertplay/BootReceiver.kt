@@ -13,6 +13,18 @@ class BootReceiver : BroadcastReceiver() {
         StartupDiagnosticSnapshot.received(context, launchEnabled)
         if (!launchEnabled) return
 
+        val silent = AirPlayPersistence.loadSilentBootConnect(context)
+        if (silent && DiPlayPreferences.phoneAddress(context) != null) {
+            try {
+                com.shilapi.xcertplay.api.DiPlayApi.connect(context, silent = true, fastRfcomm = true)
+                StartupDiagnosticSnapshot.launchResult(context)
+                Log.i(TAG, "Boot auto-start initiated silent connection in background")
+                return
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Boot silent connect failed, falling back to activity launch", error)
+            }
+        }
+
         val launch = Intent(context, DiPlayActivity::class.java).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or

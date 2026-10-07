@@ -152,6 +152,40 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/usb_auto_confirm_service_config" />
         </service>
+
+        <!-- Public external invocation chain APIs -->
+        <receiver
+            android:name="com.shilapi.xcertplay.api.DiPlayControlReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.shihab.diplay.action.CONNECT" />
+                <action android:name="com.shihab.diplay.action.DISCONNECT" />
+                <action android:name="com.shihab.diplay.action.OPEN_CARPLAY" />
+                <action android:name="com.shihab.diplay.action.GET_STATUS" />
+            </intent-filter>
+        </receiver>
+
+        <activity
+            android:name="com.shilapi.xcertplay.api.ConnectActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
+
+        <activity
+            android:name="com.shilapi.xcertplay.api.DisconnectActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
+
+        <activity
+            android:name="com.shilapi.xcertplay.api.OpenCarPlayActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
     </application>
 
 </manifest>

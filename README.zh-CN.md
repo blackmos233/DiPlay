@@ -23,6 +23,36 @@ Wi-Fi Direct 现支持 Android 9 的旧版建组路径，使用系统返回的�
 - **热点自动加入修复**：只在符合要求的 Android 13+、用户配置的 5 GHz 热点上提供明确的检查／应用／恢复操作；要求热点关闭、无活动会话、支持的 API 和已授权本地 ADB，并保留完整私有备份。打开设置或启动 CarPlay 不会自动修改热点。
 - **界面与语言**：修正全尺寸多窗口主页、设置可见性及预览保存；主设置页面可修改 CarPlay 返回车辆按钮，等待画面跟随 CarPlay 昼夜模式。应用及发布网站新增繁体中文（台湾），共七种语言。
 
+## 扩展增强功能 (DiPlay Enhanced)
+
+本项目在原版基础上，针对第三方车载桌面（Launcher）集成、极速连接优化及车载交互体验进行了深度扩展：
+
+- **Root 极速直连（跳过 SDP 蓝牙握手）**：
+  - 针对拥有 Root 权限的设备，支持绕过耗时的蓝牙服务发现（SDP）查询，直接连接 iPhone 标准 iAP2 RFCOMM 端口（Port 2/3）。
+  - 结合系统级 I/O 调度与网络优化，使无线握手连接耗时减少 4～6 秒。
+  - 支持在设置页面中自由切换开启（“跳过SDP连接”）。
+
+- **全局外部调用链与车载桌面（Launcher）深度集成**：
+  - **广播控制通道（热交互，零抢焦）**：
+    - `com.shihab.diplay.action.CONNECT`（支持 `silent=true`、`fast_rfcomm=true`）
+    - `com.shihab.diplay.action.DISCONNECT`
+    - `com.shihab.diplay.action.OPEN_CARPLAY`
+    - `com.shihab.diplay.action.GET_STATUS`
+  - **状态与阶段实时分发**：
+    - 外部应用可监听 `com.shihab.diplay.action.STATUS_CHANGED` 广播，实时获取连接状态（`IDLE`、`CONNECTING`、`CONNECTED`、`DISCONNECTED`）及详细步骤文本。
+  - **冷启动路由 Activity 链（支持被杀唤醒）**：
+    - 提供完全透明、无过渡动画的路由组件（`ConnectActivity`、`DisconnectActivity`、`OpenCarPlayActivity`），在 DiPlay 进程被系统杀死或开机冷启动时也能被外部一键唤醒并保持后台静默连接。
+
+- **开机与后台静默连接（上车无感连，点图标秒切）**：
+  - 支持静默连接（`silent=true`），在后台完成握手并维持长连接与数据流，不抢占前台 Launcher 焦点。
+  - 在设置中提供“开机后台静默连接”开关，车辆开机自动在后台与手机连好 CarPlay，车主在桌面点击卡片即可零延迟瞬切全屏。
+
+- **连接加载界面多阶段动态进度实时更新**：
+  - 将原版单一的“正在准备 CarPlay...”彻底替换为细粒度的底层协议进度更新（蓝牙直连、Wi-Fi 凭证下发、iPhone 接入车载网络、AirPlay 会话建立、画面渲染就绪等）。
+
+- **独立配套调试器（DiPlay 调试器）**：
+  - 独立构建模块 `:tester`（包名 `com.diplay.tester`），提供专为车载横屏优化的双栏可视化调试面板，方便开发者随时测试冷热调用链与查看实时回执日志。
+
 [0.2.13 完整说明](docs/RELEASE-NOTES-0.2.13.md)包含全部 35 项贡献及验证边界；[验证记录](docs/VALIDATION.md)将在最终发布检查后填写。可选功能请停车后测试。不宣称所有秦／海豹／汉／唐固件、一般卡顿、Siri 或旧版 iOS 问题均已解决。覆盖更新需要相同包名和签名，最终 APK 签名验证完成前不宣称更新兼容性已确认。
 
 ### 请提供 0.2.13 的新诊断报告

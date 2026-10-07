@@ -66,6 +66,7 @@ class Iap2WirelessControlClient(
         var forwardedFrames = 0
         var wifiConfigurationsSent = 0
         var carPlayStartSessionsSent = 0
+        var lastCarPlayStartSessionNanos = 0L
         var preTransportWiFiConfigurationsSent = 0
         var postTransportWiFiConfigurationsSent = 0
         var transportNotificationSeen = false
@@ -89,7 +90,23 @@ class Iap2WirelessControlClient(
                 }
                 location.tick { send(it, deadlineNanos) }
                 vehicleStatus.tick { send(it, deadlineNanos) }
-                val pollTimeout = vehicleStatus.pollTimeout(location.pollTimeout(remaining))
+                if (stage >= Iap2WirelessControlStage.CARPLAY_START_SENT &&
+                    carPlayStartSessionsSent < MAX_CARPLAY_START_SESSION_SENDS &&
+                    lastCarPlayStartSessionNanos > 0L &&
+                    System.nanoTime() - lastCarPlayStartSessionNanos >= CARPLAY_START_SESSION_RETRY_INTERVAL_MILLIS * NANOS_PER_MILLISECOND
+                ) {
+                    lastCarPlayStartSessionNanos = System.nanoTime()
+                    sendStartSession(endpoint, { send(it, deadlineNanos) }, onStartSessionSent)
+                    carPlayStartSessionsSent++
+                    onProgress("iap2 tx=0x4301 retry-$carPlayStartSessionsSent carplay-start-session")
+                }
+                val retryRemaining = if (stage >= Iap2WirelessControlStage.CARPLAY_START_SENT && carPlayStartSessionsSent < MAX_CARPLAY_START_SESSION_SENDS) {
+                    val elapsed = (System.nanoTime() - lastCarPlayStartSessionNanos) / NANOS_PER_MILLISECOND
+                    (CARPLAY_START_SESSION_RETRY_INTERVAL_MILLIS - elapsed).coerceAtLeast(50L)
+                } else {
+                    remaining
+                }
+                val pollTimeout = min(vehicleStatus.pollTimeout(location.pollTimeout(remaining)), retryRemaining)
                 val incoming = session.recv(pollTimeout)
                 if (incoming == null) {
                     if (session.isClosed) {
@@ -164,6 +181,7 @@ class Iap2WirelessControlClient(
                         sendStartSession(endpoint, { send(it, deadlineNanos) }, onStartSessionSent)
                         stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
                         carPlayStartSessionsSent++
+                        lastCarPlayStartSessionNanos = System.nanoTime()
                         onProgress("iap2 tx=0x4301 carplay-start-session")
                     }
 
@@ -243,6 +261,8 @@ class Iap2WirelessControlClient(
         private const val MAX_RECV_TIMEOUT_MILLIS = 5 * 60 * 1_000L
         private const val MAX_PRE_TRANSPORT_WIFI_CONFIGURATION_SENDS = 5
         private const val MAX_POST_TRANSPORT_WIFI_CONFIGURATION_SENDS = 2
+        private const val MAX_CARPLAY_START_SESSION_SENDS = 8
+        private const val CARPLAY_START_SESSION_RETRY_INTERVAL_MILLIS = 1_500L
         private const val NANOS_PER_MILLISECOND = 1_000_000L
 
         /** Malformed optional availability metadata must not change existing control behavior. */

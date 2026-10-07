@@ -119,6 +119,9 @@ sealed class CarPlayStatus {
     data object WaitingForPairedIphone : CarPlayStatus()
     data object ConnectingBluetooth : CarPlayStatus()
     data object RunningWireless : CarPlayStatus()
+    data object ExchangingCredentials : CarPlayStatus()
+    data object ConnectingWifi : CarPlayStatus()
+    data object StartingSession : CarPlayStatus()
     data object WirelessActive : CarPlayStatus()
     data object WirelessActiveFallback : CarPlayStatus()
     data object DiscoveringIphone : CarPlayStatus()
@@ -1119,6 +1122,7 @@ class CarPlayController(
     private fun runWireless(generation: Int) {
         try {
             debugLog("wireless bring-up generation=$generation starting")
+            RootAccelerator.boost(::debugLog)
             closeWirelessStack(generation = generation)
             if (
                 closed ||
@@ -1144,6 +1148,7 @@ class CarPlayController(
                             .apply { isDaemon = true; start() }
                     }
                 },
+                timeoutMillis = 14_000L,
                 log = { debugLog("wireless startup generation=$generation listener=${listenerIdentity.id} $it") },
             )
             firstTcpWatchdog = watchdog
@@ -1284,28 +1289,70 @@ class CarPlayController(
             }
 
             onStatus(CarPlayStatus.ConnectingBluetooth)
-            debugLog(
-                "wireless RFCOMM connecting address=${device.address} " +
-                    "uuid=$IAP2_IPHONE_UUID",
-            )
-            val socket = synchronized(wirelessResourceLock) {
-                if (isStaleWirelessRun(generation)) return
-                device.createRfcommSocketToServiceRecord(UUID.fromString(IAP2_IPHONE_UUID))
-                    .also { bluetoothSocket = it }
+            var socket: BluetoothSocket? = null
+            var usedFastRfcomm = false
+            val targetChannel = config.cachedRfcommPort ?: getCachedRfcommPort()
+
+            if (config.fastRfcomm) {
+                debugLog("wireless RFCOMM attempting fast direct connect channel=$targetChannel address=${device.address}")
+                val fastStarted = System.nanoTime()
+                try {
+                    val directSocket = synchronized(wirelessResourceLock) {
+                        if (isStaleWirelessRun(generation)) return
+                        createDirectRfcommSocket(device, targetChannel).also { bluetoothSocket = it }
+                    }
+                    connectBluetoothSocket(directSocket, device.address, timeoutMillis = FAST_RFCOMM_TIMEOUT_MILLIS)
+                    socket = directSocket
+                    usedFastRfcomm = true
+                    connectionDiagnostic(
+                        "Bluetooth fast direct RFCOMM connect completed elapsedMs=${elapsedMillis(fastStarted)} channel=$targetChannel",
+                    )
+                    debugLog(
+                        "wireless RFCOMM fast direct connected address=${device.address} channel=$targetChannel elapsedMs=${elapsedMillis(fastStarted)}",
+                    )
+                } catch (fastError: Throwable) {
+                    connectionDiagnostic(
+                        "Bluetooth fast direct RFCOMM connect failed elapsedMs=${elapsedMillis(fastStarted)}: ${fastError.message}; falling back to SDP",
+                    )
+                    debugLog(
+                        "wireless RFCOMM fast direct connect failed channel=$targetChannel: ${fastError.message}; falling back to SDP query",
+                    )
+                    synchronized(wirelessResourceLock) {
+                        runCatching { bluetoothSocket?.close() }
+                        bluetoothSocket = null
+                    }
+                }
             }
-            logBluetoothConnectionSnapshot(device, "before-connect")
-            val bluetoothStarted = System.nanoTime()
-            try {
-                connectBluetoothSocket(socket, device.address)
-                connectionDiagnostic("Bluetooth connect completed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
-                    "socketReportedConnected=${runCatching { socket.isConnected }.getOrNull() ?: "unknown"}")
-            } catch (error: Throwable) {
-                connectionDiagnostic(
-                    "Bluetooth connect failed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
-                        "failureClass=${diagnosticFailureClass(error)}",
+            if (socket == null) {
+                debugLog(
+                    "wireless RFCOMM connecting address=${device.address} " +
+                        "uuid=$IAP2_IPHONE_UUID",
                 )
-                logBluetoothConnectionSnapshot(device, "after-failure")
-                throw error
+                val sdpSocket = synchronized(wirelessResourceLock) {
+                    if (isStaleWirelessRun(generation)) return
+                    device.createRfcommSocketToServiceRecord(UUID.fromString(IAP2_IPHONE_UUID))
+                        .also { bluetoothSocket = it }
+                }
+                logBluetoothConnectionSnapshot(device, "before-connect")
+                val bluetoothStarted = System.nanoTime()
+                try {
+                    connectBluetoothSocket(sdpSocket, device.address)
+                    connectionDiagnostic(
+                        "Bluetooth connect completed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
+                            "socketReportedConnected=${runCatching { sdpSocket.isConnected }.getOrNull() ?: "unknown"}",
+                    )
+                } catch (error: Throwable) {
+                    connectionDiagnostic(
+                        "Bluetooth connect failed elapsedMs=${elapsedMillis(bluetoothStarted)} " +
+                            "failureClass=${diagnosticFailureClass(error)}",
+                    )
+                    logBluetoothConnectionSnapshot(device, "after-failure")
+                    throw error
+            }
+
+            extractRfcommPort(socket)?.let { realPort ->
+                debugLog("wireless RFCOMM active port=$realPort (usedFastRfcomm=$usedFastRfcomm)")
+                saveCachedRfcommPort(realPort)
             }
             debugLog("wireless RFCOMM connected address=${device.address}")
             logBluetoothConnectionSnapshot(device, "after-connect")
@@ -1388,6 +1435,13 @@ class CarPlayController(
                 onProgress = { message ->
                     diagnostics.controlProgress(message)
                     debugLog(message)
+                    if (message.contains("request-wifi-configuration")) {
+                        onStatus(CarPlayStatus.ExchangingCredentials)
+                    } else if (message.contains("carplay-transport-notification")) {
+                        onStatus(CarPlayStatus.ConnectingWifi)
+                    } else if (message.contains("carplay-start-session")) {
+                        onStatus(CarPlayStatus.StartingSession)
+                    }
                 },
             )
             if (isStaleWirelessRun(generation)) {
@@ -2094,7 +2148,13 @@ class CarPlayController(
             throw WirelessStartupException(WirelessStartupFailure.HOTSPOT_CONFIGURATION,
                 "The car hotspot is off. Turn it on in the car settings and connect again.")
         }
-        val manager: WirelessHotspotManager = when (hotspotMode) {
+        val effectiveHotspotMode = if (hotspotMode == WirelessHotspotMode.WIFI_P2P && isConnectedToIphoneHotspot()) {
+            debugLog("Connected to iPhone hotspot on wlan0 (172.20.10.x); auto-switching to Existing Wi-Fi mode")
+            WirelessHotspotMode.EXISTING_WIFI
+        } else {
+            hotspotMode
+        }
+        val manager: WirelessHotspotManager = when (effectiveHotspotMode) {
             WirelessHotspotMode.WIFI_P2P -> WifiP2pGroupManager(appContext, ::debugLog,
                 preferredChannel = config.wifiP2pPreferredChannel)
             WirelessHotspotMode.LOCAL_ONLY_HOTSPOT -> LocalOnlyHotspotManager(appContext, ::debugLog)
@@ -2121,7 +2181,7 @@ class CarPlayController(
             }
             hotspot = manager
         }
-        val timeoutMillis = if (hotspotMode == WirelessHotspotMode.WIFI_P2P) {
+        val timeoutMillis = if (effectiveHotspotMode == WirelessHotspotMode.WIFI_P2P) {
             WIFI_P2P_START_TIMEOUT_MILLIS
         } else if (hotspotMode == WirelessHotspotMode.MANUAL) {
             ((readyDeadline - System.nanoTime()) / 1_000_000).coerceAtLeast(1)
@@ -2142,6 +2202,28 @@ class CarPlayController(
         }
     }
 
+    private fun isConnectedToIphoneHotspot(): Boolean {
+        val connectivity = appContext.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+        val networks = connectivity.allNetworks.filter { network ->
+            connectivity.getNetworkCapabilities(network)?.let {
+                it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) &&
+                    !it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)
+            } == true
+        }
+        for (network in networks) {
+            val properties = connectivity.getLinkProperties(network) ?: continue
+            for (route in properties.routes) {
+                val gateway = route.gateway?.hostAddress
+                if (gateway != null && gateway == "172.20.10.1") return true
+            }
+            for (link in properties.linkAddresses) {
+                val host = link.address.hostAddress
+                if (host != null && host.startsWith("172.20.10.")) return true
+            }
+        }
+        return false
+    }
+
     private fun isStaleWirelessRun(generation: Int): Boolean =
         closed || phase != Phase.WIRELESS || generation != wirelessGeneration.get() || wirelessFailureReported.get()
 
@@ -2160,6 +2242,8 @@ class CarPlayController(
         val iPhones = bonded.filter { device ->
             device.name?.contains("iPhone", ignoreCase = true) == true
         }
+        if (iPhones.size == 1) return iPhones.single()
+        if (bonded.size == 1) return bonded.single()
         val directlyConnectedIPhones = iPhones.filter(::isBluetoothDeviceConnected)
         Log.i(
             IphoneCarPlayConfiguration.TAG,
@@ -2194,7 +2278,11 @@ class CarPlayController(
         )
     }
 
-    private fun connectBluetoothSocket(socket: BluetoothSocket, address: String) {
+    private fun connectBluetoothSocket(
+        socket: BluetoothSocket,
+        address: String,
+        timeoutMillis: Long = RFCOMM_CONNECT_TIMEOUT_MILLIS,
+    ) {
         val result = AtomicReference<Throwable?>()
         val connected = CountDownLatch(1)
         Thread(
@@ -2213,7 +2301,7 @@ class CarPlayController(
             start()
         }
         val completed = try {
-            connected.await(RFCOMM_CONNECT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+            connected.await(timeoutMillis, TimeUnit.MILLISECONDS)
         } catch (error: InterruptedException) {
             Thread.currentThread().interrupt()
             runCatching { socket.close() }
@@ -2222,17 +2310,50 @@ class CarPlayController(
         if (!completed) {
             debugLog(
                 "wireless RFCOMM connect timed out after " +
-                    "${RFCOMM_CONNECT_TIMEOUT_MILLIS}ms address=$address",
+                    "${timeoutMillis}ms address=$address",
             )
             runCatching { socket.close() }
             throw IOException(
-                "Timed out after ${RFCOMM_CONNECT_TIMEOUT_MILLIS}ms connecting RFCOMM to $address",
+                "Timed out after ${timeoutMillis}ms connecting RFCOMM to $address",
             )
         }
         when (val failure = result.get()) {
             null -> Unit
             is IOException -> throw failure
             else -> throw IOException("Could not connect RFCOMM to $address", failure)
+        }
+    }
+
+    private fun createDirectRfcommSocket(device: BluetoothDevice, channel: Int): BluetoothSocket {
+        val method = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+        return method.invoke(device, channel) as BluetoothSocket
+    }
+
+    private fun extractRfcommPort(socket: BluetoothSocket): Int? {
+        return runCatching {
+            val method = runCatching { socket.javaClass.getMethod("getPort") }.getOrNull()
+            if (method != null) {
+                val p = method.invoke(socket) as? Int
+                if (p != null && p > 0) return p
+            }
+            val field = socket.javaClass.getDeclaredField("mPort")
+            field.isAccessible = true
+            val p = field.getInt(socket)
+            if (p > 0) p else null
+        }.getOrNull()
+    }
+
+    private fun getCachedRfcommPort(): Int {
+        return runCatching {
+            appContext.getSharedPreferences(RFCOMM_CACHE_PREFS, Context.MODE_PRIVATE)
+                .getInt(KEY_CACHED_CHANNEL, 1)
+        }.getOrDefault(1).takeIf { it > 0 } ?: 1
+    }
+
+    private fun saveCachedRfcommPort(port: Int) {
+        runCatching {
+            appContext.getSharedPreferences(RFCOMM_CACHE_PREFS, Context.MODE_PRIVATE)
+                .edit().putInt(KEY_CACHED_CHANNEL, port).apply()
         }
     }
 
@@ -2340,7 +2461,7 @@ class CarPlayController(
             }
         }
         if (!adapter.getProfileProxy(appContext, listener, profile)) return emptySet()
-        if (!latch.await(3, TimeUnit.SECONDS)) {
+        if (!latch.await(500, TimeUnit.MILLISECONDS)) {
             Log.w(IphoneCarPlayConfiguration.TAG, "Timed out reading Bluetooth profile $profile")
         }
         return synchronized(devices) { devices.toSet() }
@@ -2598,6 +2719,12 @@ class CarPlayController(
             "STEP bt/rfcomm: connecting to the iPhone iAP2 RFCOMM service"
         CarPlayStatus.RunningWireless ->
             "STEP iap2/wireless: Bluetooth control loop running"
+        CarPlayStatus.ExchangingCredentials ->
+            "STEP iap2/wifi-creds: exchanging Wi-Fi credentials with iPhone"
+        CarPlayStatus.ConnectingWifi ->
+            "STEP wifi/connect: iPhone attaching to car Wi-Fi"
+        CarPlayStatus.StartingSession ->
+            "STEP airplay/start: initiating AirPlay session over Wi-Fi"
         CarPlayStatus.WirelessActive ->
             "STEP handoff/complete: tunnel iAP2 ready; Bluetooth bootstrap released"
         CarPlayStatus.WirelessActiveFallback ->
@@ -2646,6 +2773,9 @@ class CarPlayController(
         private const val DEVICE_AVAILABILITY_POLL_INTERVAL_MILLIS = 2_000L
         private const val WIRELESS_HANDOFF_TIMEOUT_MILLIS = 45_000L
         private const val RFCOMM_CONNECT_TIMEOUT_MILLIS = 15_000L
+        private const val FAST_RFCOMM_TIMEOUT_MILLIS = 3_000L
+        private const val RFCOMM_CACHE_PREFS = "diplay_rfcomm_cache"
+        private const val KEY_CACHED_CHANNEL = "cached_channel"
         private const val MAXIMUM_REENUMERATION_ATTEMPTS = 2
         private const val EXECUTOR_CLOSE_TIMEOUT_MILLIS = 2_000L
         private const val ADAPTER_ADDRESS_PLACEHOLDER = "02:00:00:00:00:00"

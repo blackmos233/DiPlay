@@ -6,6 +6,7 @@ plugins {
 // Optional local-only input. CI and ordinary source builds contain no accessory identity.
 val localAuthenticationAssets = providers.environmentVariable("DIPLAY_AUTH_ASSETS_DIR")
     .orNull?.let { file(it).canonicalFile }
+    ?: rootProject.file(".private").takeIf { it.resolve("offline-mfi").isDirectory }?.canonicalFile
 
 android {
     namespace = "com.shilapi.xcertplay"
@@ -39,8 +40,6 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".hudtest"
-            versionNameSuffix = "-hud-test"
         }
         release {
             optimization {

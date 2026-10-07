@@ -50,7 +50,7 @@ class ExistingWifiManager(
     }
 
     init {
-        require(ManualHotspotValidation.error(ssid, passphrase) == null) {
+        require(ssid.isBlank() || ManualHotspotValidation.error(ssid, passphrase) == null) {
             "Invalid existing Wi-Fi credentials"
         }
     }
@@ -89,7 +89,12 @@ class ExistingWifiManager(
                 val info = listOfNotNull(networkInfo, stationInfo).firstOrNull { readableSsid(it) != null }
                     ?: networkInfo ?: stationInfo
                 val liveSsid = readableSsid(info)
-                if (liveSsid != null && liveSsid != ssid) {
+                val effectiveSsid = when {
+                    liveSsid != null -> liveSsid
+                    ssid.isNotBlank() -> ssid
+                    else -> "iPhone"
+                }
+                if (liveSsid != null && ssid.isNotBlank() && liveSsid != ssid) {
                     throw IOException("Configured Wi-Fi does not match the connected network; check Wi-Fi settings and saved details")
                 }
                 val frequency = info?.frequency?.takeIf { it > 0 }
@@ -128,7 +133,7 @@ class ExistingWifiManager(
                 onDiagnostic("Existing Wi-Fi attached iface=$name host=${address.hostAddress} " +
                     "networkNameReadable=${liveSsid != null} channel=$channel security=${security()} " +
                     "receiverIdentity=saved")
-                return WirelessHotspotInfo(ssid, passphrase, security(), channel, frequency,
+                return WirelessHotspotInfo(effectiveSsid, passphrase, security(), channel, frequency,
                     // The router's BSSID is not this receiver's AirPlay device identity.
                     null, name, address, when {
                         frequency == null -> "Auto"

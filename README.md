@@ -41,6 +41,39 @@ See [0.2.13 release notes](docs/RELEASE-NOTES-0.2.13.md) and [validation](docs/V
 
 If a problem remains, reproduce it on **0.2.13**, then use **Settings → Diagnostics → Save diagnostic report**. Android 10+ normally saves to **Downloads/DiPlay**; Android 9 uses the document picker. If unavailable, use **View report** or **Share** from the confirmation, which identifies external/private fallback storage. Review the `.txt` and add it to a matching [existing issue](https://github.com/shihabal3amri/DiPlay/issues), or [create one](https://github.com/shihabal3amri/DiPlay/issues/new/choose). Include vehicle/head-unit model, exact firmware and Android/DiLink, phone/iOS, connection backend, relevant settings, steps and failure time. Reports are shared only when you choose; never post your hotspot password.
 
+## Extended Features (DiPlay Enhanced)
+
+In addition to upstream functionality, this fork introduces key enhancements for customized car launchers, performance optimization, and seamless integration:
+
+- **Root Fast Direct Bluetooth Connection (Skip SDP Query)**:
+  - Bypasses the slow Bluetooth Service Discovery Protocol (SDP) step and directly connects to the iPhone's fixed iAP2 RFCOMM channel.
+  - Coupled with system I/O tuning, wireless connection setup time is reduced by 4–6 seconds.
+  - Can be toggled in Connection Settings ("跳过SDP连接" / Skip SDP direct connect).
+
+- **External Invocation API & Custom Launcher Integration**:
+  - Full external control chain supporting third-party Launchers and automation tools.
+  - **Broadcast API**: Non-intrusive control without stealing focus:
+    - `com.shihab.diplay.action.CONNECT` (supports `silent=true`, `fast_rfcomm=true`)
+    - `com.shihab.diplay.action.DISCONNECT`
+    - `com.shihab.diplay.action.OPEN_CARPLAY`
+    - `com.shihab.diplay.action.GET_STATUS`
+  - **Status Broadcast Distribution**: `com.shihab.diplay.action.STATUS_CHANGED` broadcasts real-time status (`IDLE`, `CONNECTING`, `CONNECTED`, `DISCONNECTED`) and granular stage descriptions.
+  - **Cold-Start Trampoline Activities**: Zero-animation translucent Activities (`ConnectActivity`, `DisconnectActivity`, `OpenCarPlayActivity`) that can wake up DiPlay even after the process was killed or from system cold boot.
+
+- **Silent Background Boot & Connection**:
+  - Support for `silent=true` mode: DiPlay completes Bluetooth and Wi-Fi negotiation entirely in the background without bringing the full-screen CarPlay UI forward.
+  - Settings option for "开机后台静默连接" (Auto silent connect on boot) so CarPlay is already connected when you step into the car, allowing instantaneous full-screen access upon clicking your launcher card.
+
+- **Granular Live Progress on Connection Screen**:
+  - Replaces generic "Preparing CarPlay..." with real-time handshake step feedback:
+    - Bluetooth RFCOMM fast direct link / SDP query
+    - Vehicle Wi-Fi hotspot ready & awaiting phone
+    - Credential exchange & Wi-Fi association
+    - Establishing AirPlay session & rendering video stream.
+
+- **Companion Test App (`com.diplay.tester`)**:
+  - Standalone `:tester` module providing an interactive, landscape-optimized dual-column dashboard for testing broadcasts, cold wakeups, and monitoring real-time event logs.
+
 ## Documentation
 
 [Existing Wi-Fi / Same LAN](docs/EXISTING_WIFI.md) keeps the iPhone and head unit

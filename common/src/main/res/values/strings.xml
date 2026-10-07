@@ -166,6 +166,7 @@
     <string name="cluster_map_size">Dashboard map size</string>
     <string name="connect">Connect</string>
     <string name="connect_phone">Connect phone</string>
+    <string name="fast_connect_direct">Connect (Skip SDP)</string>
     <string name="connect_when_diplay_opens">Connect when DiPlay opens</string>
     <string name="connect_with_usb">Connect with USB</string>
     <string name="connect_your_iphone_with_a_usb_cable">Connect your iPhone with a USB cable</string>
@@ -193,6 +194,7 @@
     <string name="diplay">DiPlay</string>
     <string name="discard_changes_and_exit_settings">Discard changes and exit settings</string>
     <string name="disconnect">Disconnect</string>
+    <string name="disconnect_and_return_home">Disconnect &amp; Return to Home</string>
     <string name="discovering_iphone">Discovering iPhone</string>
     <string name="display_and_performance">Display and performance</string>
     <string name="display_video">Display &amp; video</string>

@@ -8,6 +8,7 @@ import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
+import android.content.pm.PackageManager
 import com.shilapi.xcertplay.iap2.wire.Iap2Frame
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -41,6 +42,14 @@ internal object BydHudBridge {
     private var showing = false
     private var lastSendResult: Int? = null
     private var icons: Map<Int, ByteArray>? = null
+    @Volatile private var unavailable = false
+
+    private fun isSomeIpAvailable(appContext: Context): Boolean = try {
+        appContext.packageManager.getPackageInfo(SOMEIP_PACKAGE, 0)
+        true
+    } catch (_: Exception) {
+        false
+    }
 
     // The gateway pings registered callbacks and drops registrations that do not answer like an AIDL stub.
     private val callback = object : Binder() {
@@ -72,7 +81,15 @@ internal object BydHudBridge {
 
     fun initialize(appContext: Context) = synchronized(lock) {
         if (context == null) context = appContext.applicationContext
+        if (unavailable) return@synchronized
+        val targetContext = context ?: appContext.applicationContext
+        if (!isSomeIpAvailable(targetContext)) {
+            unavailable = true
+            Log.i(TAG, "SOME/IP package not installed; disabling BYD HUD bridge")
+            return@synchronized
+        }
         bindLocked()
+        if (unavailable) return@synchronized
         if (!senderStarted) {
             senderStarted = true
             Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -82,6 +99,7 @@ internal object BydHudBridge {
     }
 
     fun onFrame(frame: Iap2Frame) = synchronized(lock) {
+        if (unavailable) return@synchronized
         val change = route.accept(frame.messageId, frame.payload)
         if (frame.messageId == BydHudRouteState.ROUTE_GUIDANCE_UPDATE ||
             frame.messageId == BydHudRouteState.ROUTE_GUIDANCE_MANEUVER_UPDATE
@@ -104,6 +122,7 @@ internal object BydHudBridge {
     }
 
     private fun tick() = synchronized(lock) {
+        if (unavailable) return@synchronized
         if (binder == null && !binding) bindLocked()
         sendCurrentLocked()
     }
@@ -161,7 +180,7 @@ internal object BydHudBridge {
 
     private fun bindLocked() {
         val appContext = context ?: return
-        if (binder != null || binding) return
+        if (binder != null || binding || unavailable) return
         try {
             // The gateway's onUnbind requires a MIME type; a typeless bind crashes the whole SOME/IP process.
             val intent = Intent(SOMEIP_ACTION).apply {
@@ -169,9 +188,13 @@ internal object BydHudBridge {
                 type = appContext.packageName
             }
             binding = appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+            if (!binding) {
+                unavailable = true
+            }
             Log.i(TAG, "bindService=$binding")
         } catch (error: Throwable) {
             binding = false
+            unavailable = true
             Log.w(TAG, "cannot bind SOME/IP service", error)
         }
     }

@@ -55,6 +55,7 @@ import com.shilapi.xcertplay.network.CarHotspotSettings
 import com.shilapi.xcertplay.network.CarHotspotTethering
 import com.shilapi.xcertplay.network.WifiP2pChannels
 import com.shilapi.xcertplay.orchestration.WirelessHotspotMode
+import com.shilapi.xcertplay.orchestration.RootAccelerator
 import com.shilapi.xcertplay.settings.SettingsTheme
 import com.shilapi.xcertplay.settings.SettingsWidgets
 import com.shilapi.xcertplay.transport.EvChargingConnectors
@@ -78,6 +79,7 @@ class DiPlayActivity : ComponentActivity() {
     private var setupError: String? = null
     private var status: TextView? = null
     private var connectButton: Button? = null
+    private var fastConnectButton: Button? = null
     private var disconnectButton: Button? = null
     private var lastRunning: Boolean? = null
     private var pendingWireless = false
@@ -188,6 +190,7 @@ class DiPlayActivity : ComponentActivity() {
         languagePreferenceAtCreate = AppLocale.preference(this)
         com.shilapi.xcertplay.hud.BydNavigationOutputs.onAppOpened(applicationContext)
         WheelKeyService.restoreIfNeeded(this)
+        RootAccelerator.applySystemTuning { android.util.Log.i("DiPlayRoot", it) }
         WindowCompat.setDecorFitsSystemWindows(window, true)
         window.statusBarColor = BG; window.navigationBarColor = BG
         WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -261,8 +264,10 @@ class DiPlayActivity : ComponentActivity() {
             initialLaunch = false
             startCarHotspotOnLaunch()
             if (setupError == null && !CarPlayBackgroundSession.hasSession() &&
-                DiPlayPreferences.autoConnect(this) && intent.getStringExtra("page") == null) {
-                handler.post { connect(AirPlayPersistence.loadWirelessEnabled(this)) }
+                DiPlayPreferences.phoneAddress(this) != null &&
+                intent.getStringExtra("page") == null &&
+                !intent.getBooleanExtra("stay_on_home", false)) {
+                handler.post { connect(wireless = true, fastRfcomm = true) }
             }
         }
     }
@@ -306,7 +311,7 @@ class DiPlayActivity : ComponentActivity() {
         cancelKeyLearning()
         // A restore still waiting for layout keeps its target: the old page was never laid out.
         val previousScrollY = (pendingScrollY ?: rootScroll?.scrollY)?.takeIf { renderedPage == page }
-        status = null; connectButton = null; disconnectButton = null; lastRunning = null; carButtonCard = null
+        status = null; connectButton = null; fastConnectButton = null; disconnectButton = null; lastRunning = null; carButtonCard = null
         bydAdbControls = null
         adbSwitches.clear()
         adbStatus = null
@@ -379,6 +384,12 @@ class DiPlayActivity : ComponentActivity() {
             }
             card.addView(connectButton, matchButton(0, 44))
 
+            fastConnectButton = button(getString(R.string.fast_connect_direct), false) {
+                if (CarPlayBackgroundSession.hasSession()) openProjection(fastRfcomm = true)
+                else connect(wireless = true, fastRfcomm = true)
+            }
+            card.addView(fastConnectButton, matchButton(8, 44))
+
             val buttonRow = row().apply {
                 setPadding(0, dp(8), 0, 0)
                 gravity = Gravity.CENTER_VERTICAL
@@ -416,6 +427,11 @@ class DiPlayActivity : ComponentActivity() {
             else connect(true)
         }
         card.addView(connectButton, matchButton())
+        fastConnectButton = button(getString(R.string.fast_connect_direct), false) {
+            if (CarPlayBackgroundSession.hasSession()) openProjection(fastRfcomm = true)
+            else connect(wireless = true, fastRfcomm = true)
+        }
+        card.addView(fastConnectButton, matchButton(10, 56))
         val connectionHint = when (AirPlayPersistence.loadWirelessHotspotMode(this)) {
             WirelessHotspotMode.EXISTING_WIFI -> getString(R.string.existing_wifi_hint)
             WirelessHotspotMode.MANUAL -> getString(R.string.hotspot_hint_manual)
@@ -521,6 +537,12 @@ class DiPlayActivity : ComponentActivity() {
                 permissions = { listOf(CarHotspotSetup.Permission.BOOT_LAUNCH) }) {
                 AirPlayPersistence.saveAutoStartOnBoot(this, it)
             }
+            toggle(
+                card,
+                "开机后台静默连接",
+                "开机后在后台静默建立连接，不显示全屏界面，通过外部桌面或调用链唤起",
+                AirPlayPersistence.loadSilentBootConnect(this),
+            ) { AirPlayPersistence.saveSilentBootConnect(this, it) }
             val autoConfirmActive = UsbPermissionSetup.Permission.ACCESSIBILITY.granted(this)
             toggle(
                 card,
@@ -2908,7 +2930,7 @@ class DiPlayActivity : ComponentActivity() {
         parent.addView(space(12))
     }
 
-    private fun connect(wireless: Boolean) {
+    private fun connect(wireless: Boolean, fastRfcomm: Boolean = false) {
         startupHotspotCancelled = true
         if (wireless && pendingCarHotspotSetup) { toast(getString(R.string.save_your_hotspot_details_in_connection_setup_first)); page = "connection"; render(); return }
         if (setupError != null) { toast(setupError!!); return }
@@ -2933,13 +2955,18 @@ class DiPlayActivity : ComponentActivity() {
         }
         val open = {
             AirPlayPersistence.saveWirelessEnabled(this, wireless)
-            openProjection()
+            openProjection(fastRfcomm)
         }
         if (CarPlayBackgroundSession.hasSession()) CarPlayBackgroundSession.stop { runOnUiThread { open() } }
         else open()
     }
-    private fun openProjection() {
-        startActivity(Intent(this, CarPlayHostActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+    private fun openProjection(fastRfcomm: Boolean = false) {
+        AirPlayPersistence.saveFastRfcommEnabled(this, fastRfcomm)
+        startActivity(
+            Intent(this, CarPlayHostActivity::class.java)
+                .putExtra("fast_rfcomm", fastRfcomm)
+                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        )
     }
     private fun choosePhone() {
         if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
@@ -3039,10 +3066,12 @@ class DiPlayActivity : ComponentActivity() {
         if (lastRunning != running) {
             connectButton?.text = if (running) getString(R.string.open_carplay) else getString(R.string.connect_phone)
             disconnectButton?.visibility = if (running) View.VISIBLE else View.GONE
+            fastConnectButton?.visibility = if (running) View.GONE else View.VISIBLE
             disconnectButton?.isEnabled = true
             lastRunning = running
         }
         connectButton?.isEnabled = setupError == null
+        fastConnectButton?.isEnabled = setupError == null
     }
     private fun authorizeClusterRouting() {
         val app = applicationContext
